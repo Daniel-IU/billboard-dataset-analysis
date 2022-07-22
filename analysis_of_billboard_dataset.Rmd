@@ -1,0 +1,366 @@
+---
+title: "Analysis of tidyr::billboard dataset"
+author: "Uyiosa Igbinedion"
+date: '2022-06-11'
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: journal
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(lubridate)
+library(magrittr)
+```
+
+<br><br>
+
+## Introduction and dataset overview
+
+The data set is from the dplyr package and shows song rankings for billboard top 100 in 1999/2000. 
+
+The data set has `r nrow(billboard)` rows which are `r nrow(billboard)` different song titles that made the billboard top 100 in the defined period. There are `r ncol(billboard)` columns which are :
+
+
+1. **artist**
+    * Artist name
+
+1. **track**
+    * Song name
+
+1. **date.enter**
+    * Date the song entered the top 100
+
+1. **wk1 – wk76**
+   * Rank of the song in each week after it entered
+
+<br><br>
+
+## Data transformations
+The following transformations would be done on the data to prepare it for analysis 
+
+
+1. Change from wide to long format 
+1. Drop `NA` values 
+1. Create a merged artist and track column
+1. Determine the actual weeks the songs were on the chart
+
+```{r echo=FALSE}
+knitr::kable(
+head(billboard,5),
+caption = "First five rows of the billboard dataset",
+
+)
+
+```
+
+<br><br><br><br>
+
+### Transformation 1 - 3 : Change from wide to long format, drop `NA` values and create a merged artist and track column
+
+```{r }
+#change dataset from wide to long format and drop na values
+billboard2 <- billboard %>% gather(wk1:wk76,key='Week',value ='Position') %>% drop_na(Position) %>% mutate(Year=year(date.entered))
+
+#creating a joined artist and track column
+billboard2 <- billboard2 %>% unite(artistTrack, artist, track,sep = ' - ',remove = FALSE)
+
+```
+
+<br><br><br><br>
+
+### Transformation 4 : Determine the actual weeks the songs were on the chart
+
+To achieve transformation 4, I attempted 3 approaches:
+
+1. Using base::split() and purrr::map()
+2. Using for..loop and dplyr::left_join()
+3. Using dplyr::group_split
+
+<br><br><br>
+
+#### Approach 1 : Using base::split() and purrr::map()
+```{r results = 'hide'}
+#split creation
+billboard3Split <- billboard2 %>% split(.$artistTrack)
+
+#function for map use 
+addActualWeeks <- function(df){
+  df %>% mutate(actualWeeks = seq.Date(ymd(date.entered[1]),by='weeks',length.out = nrow(df)))
+}
+
+#creating the additional column with actualweeks 
+billboardmapped <- map(billboard3Split,addActualWeeks)
+
+#unspliting/combining 
+billboardcombined <- do.call(rbind,billboardmapped)
+
+#removing rownames
+has_rownames(billboardcombined) #TRUE
+billboardcombined <- remove_rownames(billboardcombined)
+
+```
+
+<br><br><br>
+
+#### Approach 2 : Using for..loop and dplyr::left_join()
+
+```{r results = 'hide'}
+billboard3 <- billboard2 %>% group_by(artistTrack) %>% summarise(noOfWeeksOnChart=n(),dateEntered=unique(date.entered))
+dff <- tibble()
+for (i in seq(nrow(billboard3))){
+  dff<- rbind(dff,tibble('artistTrack'= billboard3$artistTrack[i],'Week'= paste('wk',seq(billboard3$noOfWeeksOnChart[i]),sep=''),'actualWeeks'= seq.Date(from = billboard3$dateEntered[i],length.out = billboard3$noOfWeeksOnChart[i], by = 'weeks')))
+}
+
+billboardjoined <- left_join(dff, billboard2, by=c("artistTrack"='artistTrack','Week'='Week'))
+
+
+```
+
+<br><br><br>
+
+#### Approach 3 : Using dplyr::group_split()
+
+I couldn't create an end-to-end solution with this approach as i didn't know how to **unsplit** afterwards
+
+
+<br><br><br><br>
+
+## Visualisations
+
+```{r include=FALSE}
+billboardgrpdplots <-billboard2 %>% group_by(artistTrack) %>% summarise(Highest_rating=min(Position),Lowest_rating=max(Position),Average_rating=mean(Position),noOfWeeksOnChart=n(),dateEntered=unique(date.entered))
+
+
+#Find Top 10 artists by billboard list feature 
+billcounted <- billboard %>% group_by(artist) %>% summarise(count=n()) %>% arrange(desc(count)) %>% head(10)
+
+#details of the billboard chart period
+chartSpan=billboard3 %$% range(dateEntered)
+chartNumOfWeeks <- difftime(chartSpan[2],chartSpan[1],units='weeks')
+chartFrom = chartSpan[1]
+chartTo = chartSpan[2]
+
+```
+
+### Viz 1
+
+```{r echo=FALSE, results='hide'}
+# Chart showing Top 10 artists featured on billboad top 100 in 1999/2000
+ggplot(billcounted)+geom_bar(aes(x=count,y=reorder(artist,+count),fill=artist),stat ='identity')+
+  theme_classic()+labs(title ='Top 10 artists featured on billboad top 100 in 1999/2000',subtitle = 'Number of tracks per artist in the billboard top 100',)+ xlab('Number of tracks')+ylab('Artist')+theme(legend.position='none')+theme(plot.title = element_text(hjust = '0.5',face='bold'),plot.subtitle = element_text(hjust = '0.5')) + geom_text(aes(x=count,y=reorder(artist,+count),label = count), data = billcounted,nudge_x = -0.13)
+
+```
+
+### Viz 2 
+
+```{r echo=FALSE}
+#Chart showing top 20 songs that lasted the longest on the chart
+top20reign <- head(arrange(billboardgrpdplots,desc(noOfWeeksOnChart)),20)
+
+ggplot(data=top20reign) +
+geom_bar(aes(x=noOfWeeksOnChart,y=reorder(artistTrack,noOfWeeksOnChart),fill=artistTrack),stat='identity',show.legend = FALSE)+
+scale_x_continuous(breaks = seq(70, by=-10)) + theme_classic()+
+labs(title ='Top 20 longest reigning songs',subtitle = paste('Within the period of',chartFrom,'to',chartTo,'(',chartNumOfWeeks,')','weeks'))+
+xlab('Number of weeks on chart')+ ylab('Artist - Song') + theme(plot.title = element_text(hjust = '0.5',face='bold'),plot.subtitle = element_text(hjust = '0.5')) + geom_text(aes(x=noOfWeeksOnChart,y=reorder(artistTrack,noOfWeeksOnChart),label = noOfWeeksOnChart), data = top20reign,nudge_x = -2)
+
+
+```
+
+### Viz 3 
+```{r echo=FALSE}
+#Songs that where #1 on the chart 
+billboardcombinedNum1 <- billboardcombined %>% filter(Position==1) %>% group_by(artistTrack) %>% summarise(noOfWeeksAsNum1 = n())
+
+ggplot(data=billboardcombinedNum1) +
+geom_bar(aes(x=noOfWeeksAsNum1,y=reorder(artistTrack,noOfWeeksAsNum1),fill=artistTrack),stat='identity',show.legend = FALSE)+
+labs(title ='Chart topping songs',subtitle = paste('Within the period of',chartFrom,'to',chartTo,'(',chartNumOfWeeks,')','weeks'))+
+xlab('Number of weeks as #1')+ylab('Artist - Song')+
+scale_x_continuous(breaks = seq(10, by=-1)) +theme_classic() +theme(plot.title = element_text(hjust = '0.5',face='bold'),plot.subtitle = element_text(hjust = '0.5'))+ geom_text(aes(x=noOfWeeksAsNum1,y=reorder(artistTrack,noOfWeeksAsNum1),label = noOfWeeksAsNum1), data = billboardcombinedNum1, nudge_x = -0.28)
+
+
+```
+
+
+
+### Viz 4
+```{r echo=FALSE, message = FALSE}
+# chart showing higher ranking (min) songs stay longer on chart
+billboardgrpdplotsmeantime <- billboardgrpdplots %>% group_by(Highest_rating) %>% summarise(meanTimeOnChart = mean(noOfWeeksOnChart))
+
+ggplot(data=billboardgrpdplotsmeantime) +
+  geom_smooth(aes(x=Highest_rating,y=meanTimeOnChart))+
+  geom_point(aes(x=Highest_rating,y=meanTimeOnChart),color='orange')+
+  labs(title ='Higher ranking songs stay longer on chart')+
+  xlab('Highest chart position')+ylab('Average number of weeks on chart') +theme_classic()+
+  scale_x_continuous(breaks = seq(100, by=-10))+
+  scale_y_continuous(breaks = seq(40, by=-5))+ theme(plot.title = element_text(hjust = '0.5',face='bold'),plot.subtitle = element_text(hjust = '0.5'))
+
+```
+
+### Viz 5
+```{r echo=FALSE}
+billboardgrpdplotsmonthly <- billboardgrpdplots %>% mutate(yearMonth= my(paste(month(dateEntered,label = TRUE),year(dateEntered))))
+billboardgrpdplotsmonthly2 <- billboardgrpdplotsmonthly %>% group_by(yearMonth) %>% summarise(noOfEntrants=n()) %>% mutate(year=year(yearMonth))
+
+
+ggplot(data=billboardgrpdplotsmonthly2)+ geom_bar(aes(x=yearMonth,y=noOfEntrants,fill=as.character(year)),stat='identity')+
+  scale_x_date(breaks=seq.Date(from=ymd(19990601),length.out=19,by='month'),date_labels ='%b' )+theme_classic()+
+  labs(title=('Song entry into the billboard 100 by month'),fill='Year',x='Month',y='Number of songs')+
+  theme(plot.title = element_text(hjust = '0.5',face='bold')) + geom_text(aes(x=yearMonth,y=noOfEntrants,label = noOfEntrants), data = billboardgrpdplotsmonthly2, nudge_y = -0.55)
+
+```
+
+
+
+
+### Viz 6
+
+```{r echo=FALSE}
+testForChange <- function(value) {
+  if (value > 0) 'Higher exit'
+  else if (value < 0) 'Lower exit'
+  else 'Same'
+}
+testForChange <- Vectorize(testForChange)
+
+# Charts leaving higher or lower 
+billboardcombinedsummised <- billboardcombined %>% group_by(artistTrack) %>% summarise(entryWeek = min(actualWeeks),entryPosition = Position[which.min(actualWeeks)],exitWeek=max(actualWeeks),exitPosition = Position[which.max(actualWeeks)])
+billboardcombinedsummised <- billboardcombinedsummised %>% mutate(positionDiff = entryPosition-exitPosition, hOrL = testForChange(positionDiff))
+
+
+billboardgeomtext <- billboardcombinedsummised %>% group_by(hOrL) %>% summarise(Count=n(),averageChange = mean(positionDiff))
+
+ggplot(billboardcombinedsummised) + geom_bar(aes(x=hOrL,fill=hOrL),show.legend=FALSE)+
+  labs(title = str_wrap('More songs leave the chart at a lower position than their entry position',width = 40),x='',y='Count')+
+  theme_classic()+theme(plot.title = element_text(hjust=0.5))+
+  geom_text(aes(x=hOrL,y=Count,label=Count),data=billboardgeomtext,nudge_y = 5)
+
+```
+
+### Viz 7 
+```{r echo=FALSE}
+# Average change in chart entry and exit position 
+
+ggplot(billboardgeomtext) + geom_bar(aes(x=hOrL,y=averageChange,fill=hOrL),stat='identity',show.legend = FALSE)+
+  labs(title = str_wrap('Higher exiting charts move higher than lower exiting charts move lower',width = 40),x='',y='Average position change')+
+  theme_classic()+theme(plot.title = element_text(hjust=0.5))+
+  geom_text(aes(x=hOrL,y=averageChange,label=format(averageChange,digits=2)),data=billboardgeomtext,nudge_x = 0.52,check_overlap = TRUE)
+
+```
+
+### Viz 8
+
+```{r echo=FALSE}
+# Top chart movers (entry vs exit position)
+ggplot(head(arrange(billboardcombinedsummised,desc(positionDiff)),20)) + geom_bar(aes(y=reorder(artistTrack,positionDiff),x=positionDiff,fill=artistTrack),show.legend=FALSE,stat='identity')+
+  labs(title = str_wrap('Top 20 chart movers (entry vs exit position)',width = 40),x='Change in position',y='Artist - Track')+
+  theme_classic()+theme(plot.title = element_text(hjust=0.5))+
+  geom_text(aes(y=reorder(artistTrack,positionDiff),x=positionDiff,label=positionDiff),data=head(arrange(billboardcombinedsummised,desc(positionDiff)),20),nudge_x = -2,check_overlap = TRUE)
+
+```
+
+
+
+### Viz 9
+
+```{r echo=FALSE}
+# Bottom chart movers (entry vs exit)
+ggplot(head(arrange(billboardcombinedsummised,positionDiff),20)) + geom_bar(aes(y=reorder(artistTrack,-positionDiff),x=positionDiff,fill=artistTrack),show.legend=FALSE,stat='identity')+
+  labs(title = str_wrap('Bottom 20 chart movers (entry vs exit position)',width = 40),x='Change in position',y='Artist - Track')+
+  theme_classic()+theme(plot.title = element_text(hjust=0.5))+
+  geom_text(aes(y=reorder(artistTrack,-positionDiff),x=positionDiff,label=positionDiff),data=head(arrange(billboardcombinedsummised,positionDiff),20),nudge_x =3.5 ,check_overlap = TRUE)
+
+```
+
+
+
+### Viz 10
+
+```{r echo=FALSE}
+# time spent on chart vs exit position
+billboardsummisedgrpd <- left_join(billboardcombinedsummised,billboardgrpdplots,by=c('artistTrack'='artistTrack'))
+
+ggplot(billboardsummisedgrpd) + geom_point(aes(x=noOfWeeksOnChart,y=positionDiff,color=hOrL))+
+  labs(title=str_wrap('Songs that stay longer on chart tend to exit at a higher position than entry',width=40),x='Number of weeks on chart',y='Change in position',color='Exit relative to entry')+
+  theme_classic() +theme(plot.title = element_text(hjust=0.5))
+
+```
+
+
+### Viz 11
+
+```{r echo=FALSE}
+# Highest Rating vs exit position 
+ggplot(billboardsummisedgrpd) + geom_point(aes(x=Highest_rating,y=positionDiff,color=hOrL))+
+  labs(title=str_wrap('Higher rated songs tend to exit at a higher position than entry',width=40),x='Highest rating attained',y='Change in position',color='Exit relative to entry')+
+  theme_classic() +theme(plot.title = element_text(hjust=0.5))
+
+```
+
+
+### Viz 12
+
+```{r echo=FALSE}
+# Average Rating vs exit position 
+ggplot(billboardsummisedgrpd) + geom_point(aes(x=Average_rating,y=positionDiff,color=hOrL))+
+  labs(title=str_wrap('Higher rated songs tend to exit at a higher position than entry',width=40),x='Average rating ',y='Change in position',color='Exit relative to entry')+
+  theme_classic() +theme(plot.title = element_text(hjust=0.5))
+  
+
+```
+
+### Viz 13
+```{r echo=FALSE}
+# Various chart positions for the top 20 longest reigning charts
+testForOverlap <- function(col1,col2){
+  if (col1 == col2) col1
+  else NA 
+}
+testForOverlap <- Vectorize(testForOverlap)
+
+billboardsummisedgrpd <- billboardsummisedgrpd %>% mutate(entryAndLowest = testForOverlap(entryPosition,Lowest_rating),exitAndLowest=testForOverlap(exitPosition,Lowest_rating))
+
+billboardsummisedgrpdplot <- billboardsummisedgrpd %>% select(artistTrack,noOfWeeksOnChart,entryPosition,exitPosition,Highest_rating,Lowest_rating,Average_rating,exitAndLowest,entryAndLowest)
+
+billboardsummisedgrpdplot <- billboardsummisedgrpdplot %>% gather(entryPosition:entryAndLowest,key='indicator',value='numbers') %>% drop_na(numbers)
+
+ggplot(head(arrange(billboardsummisedgrpdplot,desc(noOfWeeksOnChart),artistTrack),117)) + 
+  geom_line(aes(y=reorder(artistTrack,noOfWeeksOnChart),x=numbers))+
+  geom_point(aes(y=artistTrack,x=numbers,color=indicator))+
+  theme_minimal()+
+  labs(title =str_wrap('Chart positions for the top 20 longest reigning songs',width=40),color='Chart Positions',x='Position',y='Artist - Track')+
+  theme(plot.title = element_text(hjust=0.5))
+
+
+```
+
+### Viz 14
+
+```{r echo=FALSE}
+# Various chart positions for the top 20 shortest reigning charts
+ggplot(head(arrange(billboardsummisedgrpdplot,noOfWeeksOnChart,artistTrack),129)) + 
+  geom_line(aes(y=reorder(artistTrack,desc(noOfWeeksOnChart)),x=numbers))+
+  geom_point(aes(y=artistTrack,x=numbers,color=indicator))+
+  theme_minimal()+
+  labs(title =str_wrap('Chart positions for the top 20 shortest reigning songs',width=40),color='Chart Positions',x='Position',y='Artist - Track')+
+  theme(plot.title = element_text(hjust=0.5))
+
+```
+
+
+### Viz 15
+
+```{r echo=FALSE}
+#chart showing distribution of average ratings 
+ggplot(data=billboardgrpdplots) +geom_boxplot(aes(y=Average_rating),color='red',fill='orange')+
+scale_y_continuous(breaks = seq(100, by=-5))+ theme_classic()+
+ylab('Average rating') + scale_x_continuous(breaks = NULL)+
+  labs(title ='Distribution of average ratings') +theme(plot.title = element_text(hjust = '0.5',face='bold'),aspect.ratio = 1:1)
+
+```
+
